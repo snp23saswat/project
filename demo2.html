@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Speech to letter</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { 
+            font-family: 'Segoe UI', Arial, sans-serif; 
+            max-width: 800px; margin: 30px auto; padding: 30px; 
+            background: linear-gradient(135deg, #00c853, #ff5252);
+            color: white; border-radius: 25px; box-shadow: 0 15px 40px rgba(0,0,0,0.3);
+        }
+        .header { text-align: center; margin-bottom: 30px; }
+        .stats { 
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); 
+            gap: 15px; background: rgba(255,255,255,0.2); padding: 20px; 
+            border-radius: 15px; margin-bottom: 25px;
+        }
+        .stat { text-align: center; }
+        .stat-value { font-size: 1.8em; font-weight: bold; }
+        
+        .speech-section { 
+            background: rgba(255,255,255,0.15); padding: 25px; border-radius: 20px; 
+            margin-bottom: 25px; text-align: center;
+        }
+        #transcript { 
+            width: 100%; min-height: 120px; padding: 20px; font-size: 18px; 
+            border: 3px solid rgba(255,255,255,0.4); border-radius: 15px; 
+            background: rgba(255,255,255,0.95); color: #333; resize: vertical;
+            font-family: inherit;
+        }
+        .controls { display: flex; gap: 15px; justify-content: center; flex-wrap: wrap; margin-top: 20px; }
+        .btn { 
+            padding: 12px 24px; font-size: 16px; border: none; border-radius: 25px; 
+            cursor: pointer; font-weight: bold; transition: all 0.3s;
+        }
+        .mic-btn { background: #4CAF50; color: white; min-width: 140px; }
+        .mic-btn.listening { background: #ff9800; animation: pulse 1s infinite; }
+        .save-btn { background: #2196F3; color: white; }
+        .clear-btn { background: #f44336; color: white; }
+        .btn:hover:not(:disabled) { transform: scale(1.05); }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(255,152,0,0.7); } 70% { box-shadow: 0 0 0 15px rgba(255,152,0,0); } }
+        
+        #notesContainer { min-height: 200px; }
+        .note-item { 
+            background: rgba(255,255,255,0.2); margin-bottom: 15px; padding: 20px; 
+            border-radius: 15px; display: flex; justify-content: space-between; 
+            align-items: flex-start; transition: all 0.3s;
+            position: relative; cursor: pointer;
+        }
+        .note-item:hover { transform: translateX(10px); box-shadow: 0 8px 25px rgba(0,0,0,0.3); }
+        .note-content { flex: 1; }
+        .note-text { font-size: 16px; line-height: 1.5; margin-bottom: 8px; }
+        .note-meta { font-size: 13px; color: rgba(255,255,255,0.8); }
+        .delete-btn { 
+            background: #f44336; color: white; border: none; width: 35px; height: 35px; 
+            border-radius: 50%; cursor: pointer; font-size: 16px; margin-left: 15px;
+        }
+        .delete-btn:hover { background: #da190b; transform: scale(1.1); }
+        .empty-state { text-align: center; color: rgba(255,255,255,0.6); padding: 50px; font-style: italic; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Speech to letter</h1>
+        <div class="stats">
+            <div class="stat">
+                <div class="stat-value" id="noteCount">0</div>
+                <div>Notes</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value" id="wordsCount">0</div>
+                <div>Words</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="speech-section">
+        <textarea id="transcript" placeholder="🔴 Click mic → Speak clearly → Watch text appear live!"></textarea>
+        <div class="controls">
+            <button id="startBtn" class="btn mic-btn">🎤 Start Listening</button>
+            <button id="stopBtn" class="btn mic-btn" disabled>⏹️ Stop</button>
+            <button id="saveBtn" class="btn save-btn" disabled>💾 Save Note</button>
+            <button id="clearBtn" class="btn clear-btn">🗑️ Clear</button>
+        </div>
+    </div>
+
+    <div id="notesContainer">
+        <div id="emptyState" class="empty-state">
+            ✨ No notes yet. Speak your first note above!
+        </div>
+    </div>
+
+    <script>
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const saveBtn = document.getElementById('saveBtn');
+        const clearBtn = document.getElementById('clearBtn');
+        const transcript = document.getElementById('transcript');
+        const noteCountEl = document.getElementById('noteCount');
+        const wordsCountEl = document.getElementById('wordsCount');
+        const notesContainer = document.getElementById('notesContainer');
+        const emptyState = document.getElementById('emptyState');
+        const micBtns = document.getElementsByClassName('mic-btn');
+        const allBtns = document.querySelectorAll('.btn');
+
+        let recognition;
+        let isListening = false;
+        let notes = JSON.parse(localStorage.getItem('speech-notes')) || [];
+
+        function initSpeech() {
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!SpeechRecognition) {
+                alert('Speech API needs Chrome/Edge');
+                return false;
+            }
+
+            recognition = new SpeechRecognition();
+            recognition.continuous = true;
+            recognition.interimResults = true;
+            recognition.lang = 'en-US';
+
+            recognition.onstart = () => {
+                isListening = true;
+                startBtn.textContent = '🔴 Listening...';
+                startBtn.classList.add('listening');
+                startBtn.dataset.status = 'active';
+                stopBtn.disabled = false;
+            };
+
+            recognition.onresult = (event) => {
+                let finalText = '';
+                let interimText = '';
+                for (let i = event.resultIndex; i < event.results.length; i++) {
+                    if (event.results[i].isFinal) {
+                        finalText += event.results[i][0].transcript;
+                    } else {
+                        interimText += event.results[i][0].transcript;
+                    }
+                }
+                transcript.value = finalText + interimText;
+                saveBtn.disabled = !finalText.trim();
+            };
+
+            recognition.onend = () => {
+                isListening = false;
+                startBtn.textContent = '🎤 Start Listening';
+                startBtn.classList.remove('listening');
+                startBtn.removeAttribute('data-status');
+                stopBtn.disabled = true;
+            };
+
+            return true;
+        }
+
+        function createNoteElement(note, index) {
+            const noteDiv = document.createElement('div');
+            noteDiv.className = 'note-item';
+            noteDiv.dataset.noteId = index;
+            noteDiv.innerHTML = `
+                <div class="note-content">
+                    <div class="note-text">${note.text}</div>
+                    <div class="note-meta">${note.timestamp}</div>
+                </div>
+                <button class="delete-btn" data-index="${index}">✕</button>
+            `;
+            return noteDiv;
+        }
+
+        function renderNotes() {
+            notesContainer.innerHTML = '';
+            if (notes.length === 0) {
+                emptyState.style.display = 'block';
+                return;
+            }
+            emptyState.style.display = 'none';
+            notes.forEach((note, index) => {
+                const noteEl = createNoteElement(note, index);
+                notesContainer.appendChild(noteEl);
+            });
+            updateStats();
+        }
+
+        function saveToStorage() {
+            localStorage.setItem('speech-notes', JSON.stringify(notes));
+        }
+
+        function updateStats() {
+            noteCountEl.textContent = notes.length;
+            const totalWords = notes.reduce((sum, note) => sum + note.text.split(' ').length, 0);
+            wordsCountEl.textContent = totalWords;
+        }
+
+        startBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            if (!recognition && !initSpeech()) return;
+            recognition.start();
+        });
+
+        stopBtn.addEventListener('click', () => {
+            if (recognition) recognition.stop();
+        });
+
+        saveBtn.addEventListener('click', () => {
+            const text = transcript.value.trim();
+            if (text) {
+                notes.unshift({ text, timestamp: new Date().toLocaleString() });
+                saveToStorage();
+                transcript.value = '';
+                saveBtn.disabled = true;
+                renderNotes();
+            }
+        });
+
+        clearBtn.addEventListener('click', () => {
+            transcript.value = '';
+            saveBtn.disabled = true;
+        });
+
+        notesContainer.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const deleteBtn = e.target.closest('.delete-btn');
+            if (!deleteBtn) return;
+            const index = parseInt(deleteBtn.dataset.index);
+            notes.splice(index, 1);
+            saveToStorage();
+            renderNotes();
+        });
+
+        transcript.addEventListener('keyup', (e) => {
+            saveBtn.disabled = !e.target.value.trim();
+        });
+
+        renderNotes();
+    </script>
+</body>
+</html>
